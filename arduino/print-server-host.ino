@@ -1,25 +1,225 @@
-#include <SoftwareSerial.h>
-#include <ESP8266WiFi.h>
+#include <M5Stack.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WiFiClient.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
-#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include "WebServer.h"
+#include <Preferences.h>
 #include <ArduinoJson.h>
 #include "Adafruit_Thermal.h"
 #include "app.h"
-#define DTR_PIN 5 // labeled DTR on printer
 
-Adafruit_Thermal printer(&Serial, DTR_PIN);
+Adafruit_Thermal printer(&Serial);     // Pass addr to printer constructor
 
-ESP8266WebServer server(80);
+const IPAddress apIP(192, 168, 4, 1);
+const char* apSSID = "M5STACK_M";
+const char* apMPD = "321!321!";
+boolean settingMode;
+String ssidList;
+String wifi_ssid;
+String wifi_password;
 
-const int led = 13;
+// DNSServer dnsServer;
+WebServer webServer(80);
+
+// wifi config store
+Preferences preferences;
+
+void setup() {
+  m5.begin();
+  preferences.begin("wifi-config");
+
+  delay(10);
+  if (restoreConfig()) {
+    if (checkConnection()) {
+      settingMode = false;
+      startWebServer();
+      return;
+    }
+  }
+  settingMode = true;
+  setupMode();
+  
+  int heatTime = 125;
+  int heatInterval = 40;
+  char printDensity = 20; 
+  char printBreakTime = 2;
+  
+  // fil vert 2: fil jaune : 5 fil noir : gnd
+  Serial.begin(19200, SERIAL_8N1, 2, 5);
+  printer.begin();
+  initPrinter(heatTime, heatInterval, printDensity, printBreakTime);
+}
+
+void loop() {
+  if (settingMode) {
+  }
+  webServer.handleClient();
+}
+
+boolean restoreConfig() {
+  wifi_ssid = preferences.getString("");
+  wifi_password = preferences.getString("");
+  Serial.print("WIFI-SSID: ");
+  M5.Lcd.print("WIFI-SSID: ");
+  Serial.println(wifi_ssid);
+  M5.Lcd.println(wifi_ssid);
+  Serial.print("WIFI-PASSWD: ");
+  M5.Lcd.print("WIFI-PASSWD: ");
+  Serial.println(wifi_password);
+  M5.Lcd.println(wifi_password);
+  WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
+
+  if(wifi_ssid.length() > 0) {
+    return true;
+} else {
+    return false;
+  }
+}
+
+boolean checkConnection() {
+  int count = 0;
+  Serial.print("Waiting for Wi-Fi connection");
+  M5.Lcd.print("Waiting for Wi-Fi connection");
+  while ( count < 30 ) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println();
+      M5.Lcd.println();
+      Serial.println("Connected!");
+      M5.Lcd.println("Connected!");
+      return (true);
+    }
+    delay(500);
+    Serial.print(".");
+    M5.Lcd.print(".");
+    count++;
+  }
+  Serial.println("Timed out.");
+  M5.Lcd.println("Timed out.");
+  return false;
+}
+
+void startWebServer() {
+  if (settingMode) {
+    Serial.print("Starting Web Server at ");
+    M5.Lcd.print("Starting Web Server at ");
+    Serial.println(WiFi.softAPIP());
+    M5.Lcd.println(WiFi.softAPIP());
+
+     webServer.on("/on", handleRoot);
+
+  webServer.on("/", handleRoot);
+
+  webServer.on("/print", handlePrint);
+  
+  webServer.on("/config", handleConfig);
+
+  webServer.onNotFound(handleNotFound);
+
+  }
+  else {
+    Serial.print("Starting Web Server at ");
+    M5.Lcd.print("Starting Web Server at ");
+    Serial.println(WiFi.localIP());
+    M5.Lcd.println(WiFi.localIP());
+    webServer.on("/", []() {
+      String s = "<h1>STA mode</h1><p><a href=\"/reset\">Reset Wi-Fi Settings</a></p>";
+      webServer.send(200, "text/html", makePage("STA mode", s));
+    });
+    webServer.on("/reset", []() {
+      // reset the wifi config
+      preferences.remove("WIFI_SSID");
+      preferences.remove("WIFI_PASSWD");
+      String s = "<h1>Wi-Fi settings was reset.</h1><p>Please reset device.</p>";
+      webServer.send(200, "text/html", makePage("Reset Wi-Fi Settings", s));
+      delay(3000);
+      ESP.restart();
+    });
+  }
+  webServer.begin();
+}
+
+void setupMode() {
+  WiFi.mode(WIFI_MODE_STA);
+  WiFi.disconnect();
+  delay(100);
+  int n = WiFi.scanNetworks();
+  delay(100);
+  Serial.println("");
+  M5.Lcd.println("");
+  for (int i = 0; i < n; ++i) {
+    ssidList += "<option value=\"";
+    ssidList += WiFi.SSID(i);
+    ssidList += "\">";
+    ssidList += WiFi.SSID(i);
+    ssidList += "</option>";
+  }
+  delay(100);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(apSSID,apMPD);
+  WiFi.mode(WIFI_MODE_AP);
+  // WiFi.softAPConfig(IPAddress local_ip, IPAddress gateway, IPAddress subnet);
+  // WiFi.softAP(const char* ssid, const char* passphrase = NULL, int channel = 1, int ssid_hidden = 0);
+  // dnsServer.start(53, "*", apIP);
+  startWebServer();
+  Serial.print("Starting Access Point at \"");
+  M5.Lcd.print("Starting Access Point at \"");
+  Serial.print(apSSID);
+  M5.Lcd.print(apSSID);
+  Serial.println("\"");
+  M5.Lcd.println("\"");
+}
+
+String makePage(String title, String contents) {
+  String s = "<!DOCTYPE html><html><head>";
+  s += "<meta name=\"viewport\" content=\"width=device-width,user-scalable=0\">";
+  s += "<title>";
+  s += title;
+  s += "</title></head><body>";
+  s += contents;
+  s += "</body></html>";
+  return s;
+}
+
+String urlDecode(String input) {
+  String s = input;
+  s.replace("%20", " ");
+  s.replace("+", " ");
+  s.replace("%21", "!");
+  s.replace("%22", "\"");
+  s.replace("%23", "#");
+  s.replace("%24", "$");
+  s.replace("%25", "%");
+  s.replace("%26", "&");
+  s.replace("%27", "\'");
+  s.replace("%28", "(");
+  s.replace("%29", ")");
+  s.replace("%30", "*");
+  s.replace("%31", "+");
+  s.replace("%2C", ",");
+  s.replace("%2E", ".");
+  s.replace("%2F", "/");
+  s.replace("%2C", ",");
+  s.replace("%3A", ":");
+  s.replace("%3A", ";");
+  s.replace("%3C", "<");
+  s.replace("%3D", "=");
+  s.replace("%3E", ">");
+  s.replace("%3F", "?");
+  s.replace("%40", "@");
+  s.replace("%5B", "[");
+  s.replace("%5C", "\\");
+  s.replace("%5D", "]");
+  s.replace("%5E", "^");
+  s.replace("%5F", "-");
+  s.replace("%60", "`");
+  return s;
+}
 
 void handlePrint(){
-  if (server.hasArg("data")== false){ //Check if content received
-    server.send(400, "text/plain", "{\"code\": 400}");
+  if (webServer.hasArg("data")== false){ //Check if content received
+    webServer.send(400, "text/plain", "{\"code\": 400}");
   } else {
-    String content = server.arg("data");
+    String content = webServer.arg("data");
     const size_t bufferSize = JSON_ARRAY_SIZE(480) + JSON_OBJECT_SIZE(1) + 1850;
     DynamicJsonBuffer jsonBuffer(bufferSize);
     JsonObject&  parsed= jsonBuffer.parseObject(content);
@@ -28,20 +228,20 @@ void handlePrint(){
     for(int i=0;i<size;i++){
       adalogo_data[i] = (uint8_t)parsed["data"][i];
     }
-    if( printer.hasPaper() ) {
+    if( 1 ) {
       printer.printBitmap(384, 10, adalogo_data, false);
       delay(200);
-      server.send(200, "text/plain", "{\"code\": 200}"); 
+      webServer.send(200, "text/plain", "{\"code\": 200}"); 
     } else {
-      server.send(503, "text/plain", "{\"code\": 503}");
+      webServer.send(503, "text/plain", "{\"code\": 503}");
     }
   }
 }
 void handleConfig(){
-  if (server.hasArg("data")== false){ //Check if content received
-    server.send(400, "text/plain", "No config...");
+  if (webServer.hasArg("data")== false){ //Check if content received
+    webServer.send(400, "text/plain", "No config...");
   } else {
-    String content = server.arg("data");
+    String content = webServer.arg("data");
     const size_t bufferSize = JSON_OBJECT_SIZE(4) + 70;
     DynamicJsonBuffer jsonBuffer(bufferSize);
     JsonObject&  parsed= jsonBuffer.parseObject(content);
@@ -53,34 +253,33 @@ void handleConfig(){
 
     initPrinter(heatTime, heatInterval, printDensity, printBreakTime);
     
-    server.send(200, "text/plain", "Done");
+    webServer.send(200, "text/plain", "Done");
   }
-  digitalWrite(led, 1);
-  digitalWrite(led, 0);
+ 
 }
 void handleRoot() {
-  digitalWrite(led, 1);
+  
   String content = "";
   content += FPSTR(app_html);
-  server.send(200, "text/html", content);
-  digitalWrite(led, 0);
+  webServer.send(200, "text/html", content);
+  
 }
 
 void handleNotFound(){
-  digitalWrite(led, 1);
+
   String message = "File Not Found\n\n";
   message += "URI: ";
-  message += server.uri();
+  message += webServer.uri();
   message += "\nMethod: ";
-  message += (server.method() == HTTP_GET)?"GET":"POST";
+  message += (webServer.method() == HTTP_GET)?"GET":"POST";
   message += "\nArguments: ";
-  message += server.args();
+  message += webServer.args();
   message += "\n";
-  for (uint8_t i=0; i<server.args(); i++){
-    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  for (uint8_t i=0; i<webServer.args(); i++){
+    message += " " + webServer.argName(i) + ": " + webServer.arg(i) + "\n";
   }
-  server.send(404, "text/plain", message);
-  digitalWrite(led, 0);
+  webServer.send(404, "text/plain", message);
+  
 }
 void initPrinter(int &heatTime, int &heatInterval, char &printDensity, char &printBreakTime){
  //Modify the print speed and heat
@@ -94,38 +293,4 @@ void initPrinter(int &heatTime, int &heatInterval, char &printDensity, char &pri
  printer.write(35);
  int printSetting = (printDensity<<4) | printBreakTime;
  printer.write(printSetting); //Combination of printDensity and printBreakTime
-}
-void setup(void){
-  Serial.begin(9600);
-  int heatTime = 125;
-  int heatInterval = 40;
-  char printDensity = 20; 
-  char printBreakTime = 2;
-  
-
-  printer.begin();
-  initPrinter(heatTime, heatInterval, printDensity, printBreakTime);
-  pinMode(led, OUTPUT);
-  digitalWrite(led, 0);
-
-
-  WiFiManager wifiManager;
-  wifiManager.setDebugOutput(false);
-  wifiManager.autoConnect("Printer");
-
-  digitalWrite(led, 1);
-
-  server.on("/", handleRoot);
-
-  server.on("/print", handlePrint);
-  
-  server.on("/config", handleConfig);
-
-  server.onNotFound(handleNotFound);
-
-  server.begin();
-}
-
-void loop(void){
-  server.handleClient();
 }
